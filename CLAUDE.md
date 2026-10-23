@@ -14,7 +14,8 @@ License: AGPL-3.0-or-later.
 ```
 frontend/  React 19 + Vite app (src/views, src/components, src/store, src/lib). Builds to static files.
            android/ + ios/ are the Capacitor shells for the standalone mobile app (docs/MOBILE.md).
-api/       backend — server.js (Node, no framework), deps: @simplewebauthn/server, web-push.
+api/       backend — server.js (Node, no framework), deps: @simplewebauthn/server, web-push, undici
+           (+ optional @anthropic-ai/claude-agent-sdk, only in the `coach` image target).
            coach/ is the optional AI coach; openapi.yaml documents every route.
 web/       multi-stage Dockerfile (builds frontend → nginx) + nginx.conf.template (serves app, proxies /api).
 mcp/       optional MCP server — read-only stdio bridge exposing a user's workouts/1RM/muscle
@@ -59,7 +60,8 @@ GitHub (`github.com/DuarteSantos8/openGym`) is the home of the project; `.github
 pushes `main` and `v*` tags to the GitLab mirror. Pull requests are gated by
 `.github/workflows/test.yml` on Node 22 — the same version as `web/Dockerfile` / `api/Dockerfile`
 (`node:22-alpine`): the frontend, api and MCP suites, the locale checks, and building and booting
-both api image targets. GitLab CI on the mirror (`.gitlab-ci.yml`) builds the release artifacts:
+both api image targets and the web image (default, and under `BASE_PATH` on a remapped
+`NGINX_PORT`). GitLab CI on the mirror (`.gitlab-ci.yml`) builds the release artifacts:
 the signed Android APK, the multi-arch images and the SBOMs. Never push or merge on GitLab
 directly; the mirror is fast-forward only.
 
@@ -95,11 +97,17 @@ directly; the mirror is fast-forward only.
 
 ### API (`api/server.js`)
 
-Single file, no framework, plain `node:http`. Requests are dispatched through a `routes` object
+No framework, plain `node:http`. `server.js` holds the routes; logic that can be tested without a
+running server lives in sibling modules (`passkeys-store.js`, `rate-limit.js`, `queue.js`,
+`media.js`, `durable.js`, …), and every one of them must be on the `COPY` line in `api/Dockerfile`
+(`test/dockerfile-copy.test.js` enforces it). Requests are dispatched through a `routes` object
 keyed by `'METHOD /path'` (e.g. `routes['GET /api/health']`) matched against `req.method + ' ' +
-url.pathname` — add a new endpoint by adding a key here. State is two flat JSON files under
-`DATA_DIR` (`db.json`: users/credentials/subscriptions/invites; `state-<uid>.json`: per-user
-workout data), written with a write-temp-then-rename atomic pattern (`atomicWrite`). Auth is
+url.pathname` — add a new endpoint by adding a key here. State is flat files under `DATA_DIR`:
+`db.json` (users/credentials/subscriptions/invites, rewritten whole on every save, with a
+`db.json.bak` copy), `state-<uid>.json` (per-user workout data), `coach.json` (Coach settings),
+`uploads/` (custom-exercise media), plus `secret` and `vapid.json`. Every write goes through
+`durableWrite` (`durable.js`): temp file, fsync, rename, fsync the directory, so a "saved" reply
+survives a power cut. Auth is
 WebAuthn passkeys (`@simplewebauthn/server`) plus a signed session cookie (HMAC'd with a
 `DATA_DIR/secret` generated on first boot) — no JWT/session-store dependency. Optional pieces
 gated by env vars: `ADMIN_UIDS` (admin dashboard), `INVITE_ONLY` (signup needs a code),
@@ -136,7 +144,8 @@ output), `api`, `web` (multi-stage build of `frontend/` served by nginx, which a
 ## Guidelines from CONTRIBUTING.md worth knowing before changing code
 
 - **Dependency-light is a hard constraint, not a preference.** Frontend: React + Router + Zustand
-  and nothing else. `api/`: two dependencies total. New dependencies are a hard sell either side.
+  and nothing else. `api/`: three dependencies (`undici` exists only for the Coach's long provider
+  calls, `api/coach/node-fetch.js`). New dependencies are a hard sell either side.
 - Don't commit `media/` or `data/` (gitignored).
 - Training-logic changes (progression, 1RM, session read-back) need a unit test in `src/lib`
   beside the code, not just manual clicking-through.

@@ -8,7 +8,8 @@ to keep it that way: easy to read, easy to self-host.
 ```
 frontend/  React + Vite app (src/views, src/components, src/store, src/lib). Builds to static files.
            android/ and ios/ are the Capacitor shells for the standalone app (docs/MOBILE.md).
-api/       Backend: server.js on plain node:http, two dependencies (@simplewebauthn/server, web-push).
+api/       Backend: server.js on plain node:http, three dependencies (@simplewebauthn/server, web-push,
+           undici for the Coach's long provider calls) plus the optional Agent SDK in the coach image.
            coach/ is the optional AI coach; openapi.yaml documents every route.
 web/       Multi-stage Dockerfile (builds the frontend, serves it with nginx) and the nginx template.
 mcp/       Optional read-only MCP server for LLM clients (Claude Desktop, Cursor, ...). Not in the
@@ -34,8 +35,9 @@ cd mcp && npm test
 
 ## Guidelines
 
-- **Keep it dependency-light.** The frontend uses React, React Router and Zustand; `api/` has two
-  dependencies. A new dependency on either side is a hard sell.
+- **Keep it dependency-light.** The frontend uses React, React Router and Zustand; `api/` has three
+  dependencies (`undici` only because Node's built-in fetch gives up on a slow local model after
+  300 s, see `api/coach/node-fetch.js`). A new dependency on either side is a hard sell.
 - **Match the style.** Small components, clear names, comments only where the *why* isn't obvious.
   State lives in the Zustand store (`src/store`), pure helpers in `src/lib`. There is no linter or
   formatter config, so follow the surrounding code.
