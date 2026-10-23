@@ -174,9 +174,9 @@ test:frontend:
       fi
     - node scripts/check-locales.mjs
     # check-locales compares the packs to each other, so a key missing from ALL of them is
-    # invisible to it. This walks src/ instead. Report-only for now: there is a known
-    # backlog of untranslated demo-view strings to clear before it can fail the build.
-    - node scripts/check-source-strings.mjs
+    # invisible to it. This walks src/ instead. Strict since the backlog of untranslated
+    # demo-view strings was cleared: a new t('…') key with no entry in any pack fails here.
+    - node scripts/check-source-strings.mjs --strict
     # The fatigue model must never read higher after a rest day than before it.
     # Property probe over ~108k comparisons; too slow for the unit suite, cheap here.
     - npm run test:fatigue-probe

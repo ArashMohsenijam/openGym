@@ -13,6 +13,7 @@ on:
       - 'scripts/build-api-docs.mjs'
       - 'website/api.html'
       - 'api/coach/prompts/**'
+      - 'web/**'
       - '.github/workflows/test.yml'
   push:
     branches: [main, coach]
@@ -25,6 +26,7 @@ on:
       - 'scripts/build-api-docs.mjs'
       - 'website/api.html'
       - 'api/coach/prompts/**'
+      - 'web/**'
       - '.github/workflows/test.yml'
   workflow_dispatch:
 
@@ -56,9 +58,9 @@ jobs:
       - run: node scripts/check-locales.mjs
         working-directory: frontend
       # check-locales compares the packs to each other, so a key missing from ALL of them is
-      # invisible to it. This walks src/ instead. Report-only for now: there is a known
-      # backlog of untranslated demo-view strings to clear before it can fail the build.
-      - run: node scripts/check-source-strings.mjs
+      # invisible to it. This walks src/ instead. Strict since the backlog of untranslated
+      # demo-view strings was cleared: a new t('…') key with no entry in any pack fails here.
+      - run: node scripts/check-source-strings.mjs --strict
         working-directory: frontend
       # The fatigue model must never read higher after a rest day than before it.
       # Property probe over ~108k comparisons; too slow for the unit suite, cheap here.
@@ -180,3 +182,51 @@ jobs:
           # canDropPrivileges() fails closed, so a missing `coach` user disables every job —
           # including the fixture provider. Cheaper to assert here than to discover on an instance.
           docker run --rm opengym-api:default id coach
+
+  # Builds *and runs* the web image against a real api container. Nothing else on a pull request
+  # touches web/: a broken nginx.conf.template or entrypoint script used to surface only once
+  # docker-publish.yml had pushed the image every self-hoster pulls as :latest. nginx renders its
+  # config from env vars at start-up, so the default and the subpath/port-remapped variants are
+  # each booted and asked to serve, not just built.
+  web-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: docker build -f web/Dockerfile -t opengym-web:ci .
+      - run: docker build --target default -t opengym-api:ci ./api
+
+      - name: the web image serves the app with its headers and proxies /api
+        run: |
+          docker network create og
+          docker run -d --name api --network og -e DATA_DIR=/data opengym-api:ci
+          docker run -d --name web --network og -p 8080:80 opengym-web:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/api/config >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec web nginx -t
+          curl -fsS http://localhost:8080/ | grep -q 'id="root"'
+          curl -fsSI http://localhost:8080/ | grep -qi '^content-security-policy: default-src'
+          curl -fsSI http://localhost:8080/ | grep -qi '^x-frame-options: DENY'
+          curl -fsS http://localhost:8080/api/config | tee /dev/stderr | grep -q '"invite_only"'
+          # A path is never a screen (the app routes behind the hash): back to the root.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/plan/stale-link)" = 302
+
+      - name: under BASE_PATH and a non-default NGINX_PORT
+        run: |
+          docker run -d --name web-sub --network og -p 8081:8088 -e NGINX_PORT=8088 -e BASE_PATH=/gym opengym-web:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8081/gym/api/config >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec web-sub nginx -t
+          curl -fsS http://localhost:8081/gym/ | grep -q 'id="root"'
+          curl -fsS http://localhost:8081/gym/api/config | grep -q '"invite_only"'
+          # 05-check-base-path.sh refuses a malformed prefix before nginx starts.
+          ! docker run --rm -e BASE_PATH=gym/ opengym-web:ci nginx -t
+
+      - name: container logs
+        if: failure()
+        run: |
+          for c in api web web-sub; do echo "--- $c"; docker logs "$c" 2>&1 | tail -50 || true; done
