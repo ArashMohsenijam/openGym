@@ -4,8 +4,9 @@
 import { describe, test, expect, beforeEach } from 'vitest'
 import { buildDemoState } from '../../frontend/src/lib/demoSeed.js'
 import { parsePlan, buildPlanBundle } from '../../frontend/src/lib/plan-share.js'
+import { buildCombinedEntries } from '../../frontend/src/lib/session-merge.js'
 import {
-  createRoutine, updateRoutine, setWeekPlan, addBodyweight, addMeasurements, findExercises
+  createRoutine, updateRoutine, setWeekPlan, addBodyweight, addMeasurements, findExercises, logWorkout
 } from '../src/writes.js'
 import { WRITE_TOOLS } from '../src/write-tools.js'
 import { TOOLS } from '../src/tools.js'
@@ -164,9 +165,103 @@ describe('add_bodyweight / add_measurements', () => {
   })
 })
 
+describe('log_workout', () => {
+  // The demo's history runs up to yesterday, so "today" is the day after its last session.
+  const benchPlan = () => buildCombinedEntries(S, [S.routines[0].id]).entries.find(e => e.id === '0025')
+
+  test('a routine session: its entries matched by exercise, sets ticked, filed last, stamped', () => {
+    const push = S.routines[0]
+    const before = S.workouts.length
+    const r = logWorkout(S, {
+      routine_id: push.id, start_time: '07:15', duration_min: 50, note: 'early one',
+      exercises: [
+        { exercise_id: '0025', note: 'felt strong', sets: [{ reps: 10, weight: 40, warmup: true }, { reps: 8, weight: 60, rir: 2 }, { reps: 8, weight: 60, rpe: 9 }, { reps: 6, weight: 60, failure: true }] },
+        { exercise_name: 'front plank', sets: [{ seconds: 60 }, { seconds: 45 }] }
+      ]
+    })
+    expect(S.workouts.length).toBe(before + 1)
+    const w = S.workouts.at(-1)
+    expect(w.id).toBe(r.workout_id)
+    expect(w).toMatchObject({ name: 'Push Day', routineIds: [push.id], routineId: push.id, note: 'early one' })
+    expect(w.end - w.start).toBe(50 * 60000)
+    expect(new Date(w.start).getHours()).toBe(7)
+    expect(w._ts).toBeGreaterThan(0)
+    const [bench, plank] = w.entries
+    expect(bench).toMatchObject({ id: '0025', rid: push.id, topW: 60, note: 'felt strong' })
+    expect(bench.planned).toBeTruthy()
+    expect(bench.sets).toEqual([
+      { done: true, w: 40, r: 10, phase: 'warmup', warmup: true },
+      { done: true, w: 60, r: 8, rir: 2 },
+      { done: true, w: 60, r: 8, rpe: 9 },
+      { done: true, w: 60, r: 6, failure: true }
+    ])
+    // Not in the routine: added the way the workout screen adds one to a planned session.
+    expect(plank).toMatchObject({ id: '0463', rid: push.id, sets: [{ done: true, sec: 60 }, { done: true, sec: 45 }] })
+    expect(plank.target).toMatchObject({ mode: 'time', sec: 60 })
+    // Work sets only, as the app counts volume.
+    expect(w.vol).toBe(60 * 8 + 60 * 8 + 60 * 6)
+    expect(r).toMatchObject({ name: 'Push Day', duration_min: 50, volume: 1320, sets_done: 6 })
+    expect(r.exercises[0]).toBe('barbell bench press: 40×10, 60×8 (RIR 2), 60×8 (RPE 9), 60×6 F')
+  })
+
+  test('the next session moves on from it, as it would after Finish in the app', () => {
+    const plan = benchPlan().target
+    logWorkout(S, { routine_id: S.routines[0].id, exercises: [{ exercise_id: '0025', sets: Array(plan.sets).fill({ reps: plan.reps, weight: plan.weight }) }] })
+    expect(benchPlan().target.weight).toBeGreaterThan(plan.weight)
+  })
+
+  test('a PR only for a load that leads the history before it', () => {
+    const plan = benchPlan().target
+    const light = logWorkout(S, { exercises: [{ exercise_id: '0025', sets: [{ reps: 5, weight: 20 }] }] })
+    expect(light.new_prs).toEqual([])
+    const heavy = logWorkout(S, { exercises: [{ exercise_id: '0025', sets: [{ reps: 1, weight: plan.weight + 50 }] }] })
+    expect(heavy.new_prs).toEqual(['barbell bench press'])
+    expect(S.workouts.at(-1).prs).toEqual(['0025'])
+  })
+
+  test('freestyle: no routine, named Freestyle, exercises as done; a day in the past is filed in order', () => {
+    const r = logWorkout(S, { date: S.workouts[0].d, start_time: '05:00', exercises: [{ exercise_name: 'jump rope', sets: [{ minutes: 10 }] }] })
+    const at = S.workouts.findIndex(w => w.id === r.workout_id)
+    expect(at).toBe(0)
+    expect(S.workouts[0]).toMatchObject({ name: 'Freestyle', routineIds: [] })
+    expect(S.workouts[0].entries[0]).toMatchObject({ id: '2612', sets: [{ done: true, min: 10 }] })
+    expect(S.workouts[0].entries[0].rid).toBeUndefined()
+  })
+
+  test('replace_workout_id re-logs a day instead of adding a second workout', () => {
+    const old = S.workouts.at(-1)
+    const n = S.workouts.length
+    const r = logWorkout(S, { date: old.d, replace_workout_id: old.id, exercises: [{ exercise_id: '0025', sets: [{ reps: 5, weight: 50 }] }] })
+    expect(S.workouts.length).toBe(n)
+    expect(S.workouts.some(w => w.id === old.id)).toBe(false)
+    expect(r.replaced).toBe(old.id)
+  })
+
+  test('a superset from the routine stays a superset, and one member alone is not one', () => {
+    const c = createRoutine(S, { name: 'Circuit', exercises: [station('plyo push up'), station('jump rope')] })
+    const both = [{ exercise_id: '1306', sets: [{ seconds: 60 }] }, { exercise_id: '2612', sets: [{ seconds: 60 }] }]
+    logWorkout(S, { routine_id: c.routine_id, exercises: both })
+    const [a, b] = S.workouts.at(-1).entries
+    expect(a.sg).toBeTruthy()
+    expect(b.sg).toBe(a.sg)
+    logWorkout(S, { routine_id: c.routine_id, exercises: both.slice(1) })
+    expect(S.workouts.at(-1).entries[0].sg).toBeUndefined()
+  })
+
+  test('refusals', () => {
+    const ex = [{ exercise_id: '0025', sets: [{ reps: 5, weight: 50 }] }]
+    expect(() => logWorkout(S, { date: '2999-01-01', exercises: ex })).toThrow(/in the future/)
+    expect(() => logWorkout(S, { routine_id: 'nope', exercises: ex })).toThrow(/no routine/)
+    expect(() => logWorkout(S, { replace_workout_id: 'nope', exercises: ex })).toThrow(/no workout/)
+    expect(() => logWorkout(S, { exercises: [{ exercise_id: '0025', sets: [{ reps: 5, rir: 1, rpe: 9 }] }] })).toThrow(/not both/)
+    expect(() => logWorkout(S, { exercises: [{ exercise_id: '0025', sets: [{ weight: 50 }] }] })).toThrow(/needs reps/)
+    expect(() => logWorkout(S, { exercises: [{ exercise_name: 'bench pres', sets: [{ reps: 5 }] }] })).toThrow(/Closest matches/)
+  })
+})
+
 describe('registration', () => {
   test('every write tool has a schema and an apply; find_exercise is a read tool', () => {
-    expect(WRITE_TOOLS.map(t => t.name)).toEqual(['create_routine', 'update_routine', 'set_week_plan', 'add_bodyweight', 'add_measurements'])
+    expect(WRITE_TOOLS.map(t => t.name)).toEqual(['create_routine', 'update_routine', 'set_week_plan', 'add_bodyweight', 'add_measurements', 'log_workout'])
     for (const t of WRITE_TOOLS) { expect(typeof t.apply).toBe('function'); expect(t.schema).toBeTruthy() }
     _seedStateForTests(S)
     const find = TOOLS.find(t => t.name === 'find_exercise')

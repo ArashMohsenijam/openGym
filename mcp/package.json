@@ -1,9 +1,9 @@
 {
   "name": "opengym-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "MCP (Model Context Protocol) bridge for openGym — lets an LLM read your routines, workouts, body-weight log, estimated 1RMs and muscle balance, and (paired with your server) create routines, set the weekly plan and log weigh-ins and measurements. Stdio transport; no extra container.",
+  "description": "MCP (Model Context Protocol) bridge for openGym — lets an LLM read your routines, workouts, body-weight log, estimated 1RMs and muscle balance, and (paired with your server) create routines, set the weekly plan and log workouts, weigh-ins and measurements. Stdio transport; no extra container.",
   "license": "AGPL-3.0-or-later",
   "main": "src/index.js",
   "bin": {

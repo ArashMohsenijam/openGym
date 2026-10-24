@@ -12,7 +12,7 @@ two modes:
   off the disk of the box it runs on. Read-only, no network, no extra authentication.
 - **Remote** (`OPENGYM_URL`): talks to your openGym server over HTTPS as a paired device, the
   way the phone app does. It reads what the server holds and can also **write**: create and
-  edit routines, set the weekly plan, log weigh-ins and body measurements. Changes go through the
+  edit routines, set the weekly plan, log workouts, weigh-ins and body measurements. Changes go through the
   same sync as the phone, so they show up on every device. See [Writing to openGym](#writing-to-opengym-remote-mode).
 
 Either way the LLM never sees passkeys, VAPID keys, session secrets or the pairing token.
@@ -20,8 +20,6 @@ Either way the LLM never sees passkeys, VAPID keys, session secrets or the pairi
 The numbers it answers with are computed by the **same pure functions the React UI uses**
 (`frontend/src/lib/*.js`) — `estimate1RM`, `loadOfWorkouts`, `effectiveRoutine`, etc. — so a
 "what's my bench 1RM?" answer matches the Stats screen exactly.
-
-> Logging a finished workout is not a tool yet; log sets in the app. See **Roadmap** below.
 
 ## Quick start
 
@@ -105,7 +103,14 @@ would race every phone's sync. So in remote mode the MCP server is a paired devi
 
 Now you can say *"Make me a Tuesday and Friday boxing circuit: barbell push-outs, plyo push-ups and
 jump rope, 3 rounds of 60 seconds each, 90 seconds between rounds"* and the routine is in the app
-on its next sync.
+on its next sync. Or, after a session you did not log in the app: *"Log today's push day: bench
+4×8 at 80, the last set to failure at 7 reps; overhead press 3×8 at 45; skipped dips"*.
+
+A logged workout goes through the app's own finish path for a session logged after the fact
+(`frontend/src/lib/backfill.js`, `finish-workout.js`): the session is built from the history
+before its day, as **Log a past workout** builds it, the sets go in ticked, and then
+`buildCompletedWorkout`, the edit stamp, date-order filing, PR badges (`rebuildPrHistory`) and the
+rotation's next pass run exactly as they do there.
 
 How a write is saved: the server's document is read, the change is applied to it, and it is
 written back over the revision it was read at (`PUT /api/data` with `baseRev`). If a phone saved
@@ -132,7 +137,7 @@ Ten read tools (both modes):
 | `muscle_balance` | Which muscles I've trained this week/month/all-time, ranked + which I've neglected. |
 | `find_exercise` | Search the 1,300+ exercise library and the profile's own exercises by name, for the ids the write tools take. |
 
-Five write tools (remote mode only; in local mode they answer with how to turn them on):
+Six write tools (remote mode only; in local mode they answer with how to turn them on):
 
 | Tool | What it does |
 |---|---|
@@ -141,6 +146,7 @@ Five write tools (remote mode only; in local mode they answer with how to turn t
 | `set_week_plan` | Which routines each listed weekday holds; an empty list makes a rest day. |
 | `add_bodyweight` | A weigh-in (kg or lb), today or a given date; the same day replaces, as in the app. |
 | `add_measurements` | Tape measurements (cm or in) and body fat for a day, merged into that day's entry. |
+| `log_workout` | A finished session (today or earlier): sets with reps, weight, seconds or minutes, warm-ups, RIR/RPE, failure; following a routine or freestyle. Saved the way the app's **Log a past workout** saves one, so PRs are judged against the history before it and the next session's prescription moves on from it. Can re-log a day (`replace_workout_id`). |
 
 `get_routine` and `preview_session` answer two different questions, and confusing them is the
 easiest way for a coach to give wrong advice. `get_routine` reports what the routine *stores*.
@@ -199,10 +205,9 @@ their own 92 tests in `frontend/src/lib/*.test.js`.
 - **Done (Phase 2):** read+write over stdio in remote mode. The pairing token stands in for a
   separate token store, and the api's conditional write (`baseRev`, 409 on conflict) for a
   write-lock. Tools: `create_routine`, `update_routine`, `set_week_plan`, `add_bodyweight`,
-  `add_measurements`, plus `find_exercise`.
-- **Next:** `log_workout` (a finished session has to go through the same reducer the app's
-  Finish button uses, `frontend/src/lib/finish-workout.js`, so progression and PRs move), and
-  `override_day`.
+  `add_measurements`, `log_workout`, plus `find_exercise`.
+- **Next:** `override_day` (move or skip one day's session), per-side (unilateral) sets in
+  `log_workout`.
 - **Phase 3:** Streamable HTTP transport, opt-in 4th container in `docker-compose.yml`. Same
   tool implementations, second transport — the MCP SDK supports both behind one tool registration.
 

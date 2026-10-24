@@ -12,8 +12,16 @@
    rule that import enforces (exercise ids that resolve, rest and warm-up clamps, superset names)
    applies here without being restated. */
 import { parsePlan, mergePlan } from '../../frontend/src/lib/plan-share.js'
-import { EXDB, EXIDX, canonicalExId, BODYPARTS } from '../../frontend/src/lib/exercises.js'
-import { exLine } from '../../frontend/src/lib/history.js'
+import { EXDB, EXIDX, canonicalExId, BODYPARTS, registerCustom } from '../../frontend/src/lib/exercises.js'
+import { exLine, setLabel, workoutVolume, setsDone } from '../../frontend/src/lib/history.js'
+import { buildCombinedEntries, deriveSessionName } from '../../frontend/src/lib/session-merge.js'
+import { buildPlannedEntry } from '../../frontend/src/lib/session-start.js'
+import { backfillStart, backfillEnd, historyAsOf, completeBackfill } from '../../frontend/src/lib/backfill.js'
+import { buildCompletedWorkout } from '../../frontend/src/lib/finish-workout.js'
+import { rebuildPrHistory } from '../../frontend/src/lib/workout-date.js'
+import { stampWorkout } from '../../frontend/src/lib/sync-merge.js'
+import { refillAfter } from '../../frontend/src/lib/rotation.js'
+import { exerciseMuscleSnapshot } from '../../frontend/src/lib/muscles.js'
 import { convertWeight, convertBodyWeight } from '../../frontend/src/lib/units.js'
 import { MUSCLES } from '../../frontend/src/lib/muscles.js'
 import { SG_NAME_MAX } from '../../frontend/src/lib/superset-meta.js'
@@ -289,4 +297,155 @@ export function addMeasurements(S, { values, unit = 'cm', date }, now = Date.now
   S.measurements.sort((a, b) => a.d.localeCompare(b.d))
   const saved = Object.fromEntries(keys.map(k => [k, entry[k]]))
   return { date: d, unit: 'cm', values: saved }
+}
+
+/* ---------- workouts ---------- */
+
+// The app's own lookups (the session builder, the PR test, volume) read an exercise's equipment
+// and body part from the global index, which in the app holds the profile's custom exercises too.
+// Registered for the length of one synchronous call and taken out again, as tools.js does, so one
+// profile's customs never linger for another's.
+function withCustomsIndexed(S, fn) {
+  registerCustom(customsOf(S))
+  try { return fn() } finally { registerCustom([]) }
+}
+
+// One logged set → the row the workout screen would have saved: ticked, its numbers, a warm-up
+// tagged the way the warm-up ramp tags its rows, effort on the scale it was given in.
+function loggedRow(set, mode, unit, weightUnit) {
+  const row = { done: true }
+  const w = set.weight != null ? convertWeight(set.weight, weightUnit || unit, unit) : 0
+  if (mode === 'cardio') {
+    if (set.minutes == null) throw fail('EINVAL', 'a cardio set needs minutes')
+    row.min = set.minutes
+    if (set.speed != null) row.speed = set.speed
+  } else if (mode === 'time') {
+    if (set.seconds == null) throw fail('EINVAL', 'a timed set needs seconds')
+    row.sec = set.seconds
+    if (w) row.w = w
+  } else {
+    if (set.reps == null) throw fail('EINVAL', 'a set needs reps (or seconds for a timed exercise, minutes for cardio)')
+    row.w = w
+    row.r = set.reps
+  }
+  if (set.warmup) { row.phase = 'warmup'; row.warmup = true }
+  if (set.rir != null && set.rpe != null) throw fail('EINVAL', 'give rir or rpe for a set, not both')
+  if (set.rir != null) row.rir = set.rir
+  if (set.rpe != null) row.rpe = set.rpe
+  if (set.failure && !set.warmup) row.failure = true
+  return row
+}
+
+// How a logged exercise is done: by what its sets carry, the way the app reads a set back.
+const loggedMode = sets => (sets.every(x => x.minutes != null) ? 'cardio' : sets.every(x => x.seconds != null) ? 'time' : 'reps')
+
+/**
+ * log_workout: a finished session, written the way the app's "Log a past workout" saves one.
+ *
+ * The session is built as the app builds it (session-merge.js buildCombinedEntries, from the
+ * history before that day: backfill.js historyAsOf), so each exercise carries the routine's target
+ * and plan exactly as a session started in the gym would; then the logged sets go in, ticked; then
+ * the Finish path for a past session runs: buildCompletedWorkout, the volume, the edit stamp,
+ * filed in date order (completeBackfill), PR badges held against the history before it
+ * (rebuildPrHistory), and a rotation pass that it completes rolls on (refillAfter). Progression
+ * reads its next prescription off this logged history, so the next session moves on from it.
+ */
+export function logWorkout(S, p, now = Date.now()) {
+  return withCustomsIndexed(S, () => {
+    const unit = unitOf(S)
+    const d = p.date || localIso(new Date(now))
+    if (d > localIso(new Date(now))) throw fail('EINVAL', `${d} is in the future — log a workout once it is done`)
+    if (!Array.isArray(S.workouts)) S.workouts = []
+    if (!Array.isArray(S.routines)) S.routines = []
+    const replaceId = p.replace_workout_id || null
+    if (replaceId && !S.workouts.some(w => w.id === replaceId)) throw fail('ENOENT', `no workout with id ${JSON.stringify(replaceId)} — use list_workouts`)
+    const routine = p.routine_id ? S.routines.find(r => r.id === p.routine_id) : null
+    if (p.routine_id && !routine) throw fail('ENOENT', `no routine with id ${JSON.stringify(p.routine_id)} — use list_routines`)
+
+    // The exercises, resolved the way create_routine resolves them (a new custom one is added to
+    // the profile), through a scratch routine that is taken out again.
+    const scratch = buildExercises(S, p.exercises.map(e => ({
+      ...(e.exercise_id != null ? { exercise_id: e.exercise_id } : {}),
+      ...(e.exercise_name != null ? { exercise_name: e.exercise_name } : {}),
+      ...(e.custom ? { custom: e.custom } : {}),
+      sets: 1, reps: 1
+    })), 'scratch')
+    S.routines = S.routines.filter(r => r !== scratch)
+    registerCustom(customsOf(S))
+    const ids = scratch.ex.map(e => e.id)
+
+    const start = backfillStart(d, p.start_time || '18:00')
+    const past = historyAsOf(S, { d, start, replaceId })
+    const { entries: planned, routineIds } = buildCombinedEntries(past, routine ? [routine.id] : [])
+    const unused = [...planned]
+    const entries = p.exercises.map((item, i) => {
+      const id = ids[i]
+      const mode = loggedMode(item.sets)
+      const rows = item.sets.map(set => loggedRow(set, mode, unit, item.weight_unit))
+      const at = unused.findIndex(e => e.id === id)
+      let base
+      if (at >= 0) {
+        base = unused.splice(at, 1)[0]
+      } else {
+        // An exercise the routine does not hold, added the way the workout screen adds one: in a
+        // planned session built as that routine would build it, in a freestyle one as done.
+        const work = rows.filter(r => !r.warmup)
+        const cfg = { id, sets: Math.max(1, work.length) }
+        if (mode === 'time') { cfg.mode = 'time'; cfg.sec = work[0]?.sec }
+        else if (mode === 'cardio') { cfg.mode = 'cardio'; cfg.min = work[0]?.min }
+        else { cfg.reps = work[0]?.r; if (work[0]?.w) cfg.weight = work[0].w }
+        base = routine
+          ? { id, ...buildPlannedEntry(past, cfg, routine), rid: routine.id }
+          : { id, target: cfg }
+      }
+      // A superset tag from the routine stays; buildCompletedWorkout drops one left without a
+      // neighbour sharing it (history.js cleanupSg), as for a session finished in the app.
+      const entry = { ...base, id, sets: rows }
+      const note = String(item.note || '').trim()
+      if (note) entry.note = note.slice(0, 280)
+      return entry
+    })
+
+    const names = routine ? [routine.name] : []
+    const active = {
+      id: uid(), d, start,
+      routineIds,
+      name: String(p.name || '').trim().slice(0, 60) || deriveSessionName(names) || 'Freestyle',
+      bw: null, cur: 0, entries,
+      backfill: { durationMin: Math.max(1, Math.min(1440, p.duration_min || 60)), replaceId },
+      ...(p.note ? { note: String(p.note).slice(0, 1000) } : {})
+    }
+    const w = buildCompletedWorkout(active, {
+      end: backfillEnd(active),
+      prs: [],
+      snapshotFor: e => {
+        const c = customsOf(S).find(x => x.id === e.id)
+        return c ? exerciseMuscleSnapshot(c) : null
+      }
+    })
+    if (!w.entries.length) throw fail('EINVAL', 'nothing to log: every set was empty')
+    w.vol = workoutVolume(w)
+    stampWorkout(w, now)
+    const touched = [...new Set([...(S.workouts.find(x => x.id === replaceId)?.entries || []), ...w.entries].map(e => e?.id).filter(id => id != null))]
+    S.workouts = rebuildPrHistory(completeBackfill(S.workouts, active, w, now), touched, w)
+    const saved = S.workouts.find(x => x.id === w.id) || w
+    refillAfter(S, saved, localIso(new Date(now)), now)
+
+    const nameOf = id => (customsOf(S).find(c => c.id === id) || EXIDX[id] || { n: id }).n
+    return {
+      workout_id: saved.id,
+      date: saved.d,
+      name: saved.name,
+      duration_min: Math.round((saved.end - saved.start) / 60000),
+      volume: saved.vol,
+      unit,
+      sets_done: setsDone(saved),
+      new_prs: (saved.prs || []).map(nameOf),
+      exercises: saved.entries.map(e => {
+        const cfg = { ...(e.target || {}), id: e.id }
+        return `${nameOf(e.id)}: ${e.sets.map(x => setLabel(e.id, { ...x, done: undefined }, cfg)).join(', ')}`
+      }),
+      ...(replaceId ? { replaced: replaceId } : {})
+    }
+  })
 }

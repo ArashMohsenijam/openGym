@@ -139,7 +139,7 @@ describe('the MCP server over stdio, in remote mode', () => {
   test('lists the read and the write tools', async () => {
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name)
-    for (const n of ['find_exercise', 'list_routines', 'get_routine', 'create_routine', 'update_routine', 'set_week_plan', 'add_bodyweight', 'add_measurements']) {
+    for (const n of ['find_exercise', 'list_routines', 'get_routine', 'create_routine', 'update_routine', 'set_week_plan', 'add_bodyweight', 'add_measurements', 'log_workout']) {
       expect(names).toContain(n)
     }
   })
@@ -180,6 +180,36 @@ describe('the MCP server over stdio, in remote mode', () => {
     const S = (await browser.get()).state
     expect(S.bodyweight.find(b => b.d === '2026-10-23').w).toBe(81.4)
     expect(S.measurements.find(m => m.d === '2026-10-23')).toMatchObject({ waist: 86, bodyFat: 18.5 })
+  })
+})
+
+describe('log_workout over stdio', () => {
+  let client
+  beforeAll(async () => {
+    const tokenFile = path.join(tmp, 'mcp2', 'token')
+    await createRemote({ url: api, tokenFile }).pair(await browser.pairCode())
+    client = new Client({ name: 'test', version: '1' })
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: [MCP_ENTRY],
+      env: { ...process.env, OPENGYM_URL: api, OPENGYM_TOKEN_FILE: tokenFile },
+      stderr: 'ignore'
+    }))
+  }, 30000)
+  afterAll(async () => { await client?.close() })
+
+  test('a session described to Claude lands in the history, stamped, and the read tools see it', async () => {
+    const r = await client.callTool({ name: 'log_workout', arguments: {
+      date: '2026-10-22', duration_min: 45,
+      exercises: [{ exercise_name: 'barbell bench press', sets: [{ reps: 8, weight: 60 }, { reps: 8, weight: 60 }] }]
+    } })
+    expect(r.isError).toBeFalsy()
+    const out = JSON.parse(r.content[0].text)
+    expect(out).toMatchObject({ saved: true, date: '2026-10-22', name: 'Freestyle', duration_min: 45, volume: 960 })
+    const w = (await browser.get()).state.workouts.find(x => x.id === out.workout_id)
+    expect(w.entries[0].sets).toEqual([{ done: true, w: 60, r: 8 }, { done: true, w: 60, r: 8 }])
+    expect(w._ts).toBeGreaterThan(0)
+    const listed = await client.callTool({ name: 'get_workout', arguments: { workout_id: out.workout_id } })
+    expect(listed.isError).toBeFalsy()
   })
 })
 

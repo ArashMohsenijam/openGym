@@ -5,7 +5,7 @@
    behind the api would race every phone's sync. */
 import { z } from 'zod'
 import {
-  createRoutine, updateRoutine, setWeekPlan, addBodyweight, addMeasurements,
+  createRoutine, updateRoutine, setWeekPlan, addBodyweight, addMeasurements, logWorkout,
   DAY_KEYS, BODYPARTS, MUSCLES, MEASUREMENT_KEYS
 } from './writes.js'
 
@@ -98,4 +98,39 @@ export const addMeasurementsTool = {
   apply: (S, p) => addMeasurements(S, p)
 }
 
-export const WRITE_TOOLS = [createRoutineTool, updateRoutineTool, setWeekPlanTool, addBodyweightTool, addMeasurementsTool]
+const loggedSet = z.object({
+  reps: z.number().int().min(0).max(1000).optional(),
+  weight: z.number().min(0).max(1000).optional().describe("Load in the profile's unit (or the exercise's weight_unit); on a bodyweight exercise, the added weight."),
+  seconds: z.number().int().min(1).max(36000).optional().describe('A timed set (plank, circuit station).'),
+  minutes: z.number().min(0.1).max(1440).optional().describe('A cardio set.'),
+  speed: z.number().min(0).max(100).optional(),
+  warmup: z.boolean().optional().describe('A warm-up set: kept out of volume, PRs and progression.'),
+  rir: z.number().min(0).max(10).optional().describe('Reps in reserve.'),
+  rpe: z.number().min(1).max(10).optional().describe('Rate of perceived exertion (instead of rir).'),
+  failure: z.boolean().optional().describe('Taken to failure.')
+})
+
+export const logWorkoutTool = {
+  name: 'log_workout',
+  description: "Log a workout that is done (today or an earlier day), the way the app's \"Log a past workout\" saves one: each set ticked, PRs judged against the history before it, and the next session's prescription moving on from it. Give routine_id when it followed a routine (its exercises are matched by exercise; the ones not logged count as skipped). Check list_workouts first so a session is not logged twice; replace_workout_id re-logs an existing one.",
+  schema: {
+    date: isoDate().optional().describe('Day it was done; default today. Not in the future.'),
+    start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'HH:MM').optional().describe('Default 18:00.'),
+    duration_min: z.number().int().min(1).max(1440).optional().describe('Default 60.'),
+    routine_id: z.string().min(1).optional(),
+    name: z.string().min(1).max(60).optional().describe("Default: the routine's name, or Freestyle."),
+    note: z.string().max(1000).optional(),
+    replace_workout_id: z.string().min(1).optional(),
+    exercises: z.array(z.object({
+      exercise_id: z.string().min(1).optional(),
+      exercise_name: z.string().min(1).optional(),
+      custom: exercise.shape.custom,
+      weight_unit: z.enum(['kg', 'lb']).optional(),
+      note: z.string().max(280).optional(),
+      sets: z.array(loggedSet).min(1).max(50)
+    })).min(1).max(40)
+  },
+  apply: (S, p) => logWorkout(S, p)
+}
+
+export const WRITE_TOOLS = [createRoutineTool, updateRoutineTool, setWeekPlanTool, addBodyweightTool, addMeasurementsTool, logWorkoutTool]
