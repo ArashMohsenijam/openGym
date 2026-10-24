@@ -205,6 +205,9 @@ test:mcp:
     paths:
       - mcp/.npm
   script:
+    # test/remote.test.js drives the write tools against a real api/server.js in a child,
+    # so the api's own dependencies have to be there (the Agent SDK is optional and stays out).
+    - (cd api && npm ci --cache ../mcp/.npm --prefer-offline --ignore-scripts --omit=optional)
     - cd mcp
     - npm ci --cache .npm --prefer-offline --ignore-scripts
     - npx vitest run

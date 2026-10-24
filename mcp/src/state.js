@@ -12,6 +12,9 @@ let _db = undefined
 let _uid = null
 let _watcher = null
 let _loadedMtime = 0    // mtimeMs we last read at — used to catch watcher omissions
+// Remote mode (remote.js): the document comes from the openGym api, not the disk. index.js
+// refreshes it before every tool call, so the read tools answer from what the server holds now.
+let _remoteUser = null
 
 // null means one thing only: the file is not there (an account that never synced from a device).
 // Every other failure — no permission on the mount, a truncated or corrupt file — is a real fault,
@@ -83,6 +86,7 @@ function ambiguousUid(ids) {
 
 // Idempotent. Picks the uid, loads db.json, attaches the watcher, primes state.
 export function init() {
+  if (_remoteUser) return
   if (_uid !== null) return
   if (!fs.existsSync(DATA_DIR)) throw new Error(`OPENGYM_DATA dir does not exist: ${DATA_DIR}`)
   _uid = resolveUid()
@@ -114,6 +118,7 @@ export function init() {
 
 // Returns the state object, or null for a fresh account that never signed in on a device.
 export function getState() {
+  if (_remoteUser) return _state === undefined ? null : _state
   init()
   const file = stateFile(_uid)
   // Re-read if the file's mtime changed since our last load — covers watcher omissions and
@@ -138,6 +143,7 @@ export function getState() {
 
 // Returns the user record (id + name). No passkey material, no VAPID keys, no push subs.
 export function getUser() {
+  if (_remoteUser) return _remoteUser
   init()
   const u = _db.users.find(x => x.id === _uid) || { id: _uid, name: 'Profile', created: null }
   return { id: u.id, name: u.name, created: u.created || null }
@@ -145,8 +151,22 @@ export function getUser() {
 
 export const dataDir = () => DATA_DIR
 
+/** Remote mode: serve this account, with documents handed in by setRemoteState. */
+export function useRemote(user) {
+  _remoteUser = { id: user.id, name: user.name || 'Profile', created: user.created || null }
+  _uid = user.id
+  _state = undefined
+}
+export const isRemote = () => !!_remoteUser
+
+/** Remote mode: the document the server just returned (null for a profile that never synced). */
+export function setRemoteState(state) {
+  _state = state ? Object.assign({}, defaultsShape(), state) : null
+}
+
 // Test-only: work against a passed-in state, not the disk.
 export function _seedStateForTests(state) {
+  _remoteUser = null
   _uid = 'test-uid'
   _db = { users: [{ id: _uid, name: 'Test', created: '2026-07-26T00:00:00.000Z' }], creds: [], subs: [], invites: [] }
   _state = state

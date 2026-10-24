@@ -5,17 +5,23 @@ application (Claude Desktop, Cursor, Cline, Continue, etc.) read your openGym pr
 routines, workouts, body-weight log, estimated 1RMs, and muscle balance — directly from your
 self-hosted `./data` directory.
 
-It is read-only, runs locally as a stdio process spawned by the LLM client, adds no new
-container, and requires no extra authentication. The LLM never sees passkeys, VAPID keys, or
-session secrets — it can only read the same `state-<uid>.json` files the openGym api already
-writes.
+It runs locally as a stdio process spawned by the LLM client and adds no new container. It has
+two modes:
+
+- **Local** (`OPENGYM_DATA`): reads the `state-<uid>.json` files the openGym api writes, straight
+  off the disk of the box it runs on. Read-only, no network, no extra authentication.
+- **Remote** (`OPENGYM_URL`): talks to your openGym server over HTTPS as a paired device, the
+  way the phone app does. It reads what the server holds and can also **write**: create and
+  edit routines, set the weekly plan, log weigh-ins and body measurements. Changes go through the
+  same sync as the phone, so they show up on every device. See [Writing to openGym](#writing-to-opengym-remote-mode).
+
+Either way the LLM never sees passkeys, VAPID keys, session secrets or the pairing token.
 
 The numbers it answers with are computed by the **same pure functions the React UI uses**
 (`frontend/src/lib/*.js`) — `estimate1RM`, `loadOfWorkouts`, `effectiveRoutine`, etc. — so a
 "what's my bench 1RM?" answer matches the Stats screen exactly.
 
-> Phase 1 of a multi-phase plan. Read-only today; long-lived token auth + write tools are
-> planned but not shipped yet. See **Roadmap** below.
+> Logging a finished workout is not a tool yet; log sets in the app. See **Roadmap** below.
 
 ## Quick start
 
@@ -65,9 +71,53 @@ For Cursor and other MCP-compatible clients, see the client's MCP docs — the s
 Restart the client; you should see the openGym tools appear with "serving profile \<name\>" on
 the server's stderr.
 
+## Writing to openGym (remote mode)
+
+Writes go through your openGym server, never round it: a file edited on the disk behind the api
+would race every phone's sync. So in remote mode the MCP server is a paired device.
+
+1. **Pair once.** In openGym in a browser (the row is not in the phone app), open **Settings →
+   Account → Pair the mobile app**; it shows a code that is valid for 5 minutes. Then, on the machine your LLM client runs on:
+
+   ```bash
+   cd mcp && npm install
+   OPENGYM_URL=https://gym.example.com node src/index.js pair ABC123
+   # Paired with https://gym.example.com as Arash. Token saved to ~/.config/opengym-mcp/token.
+   ```
+
+   The token is the same kind the phone app holds: renewed automatically while it is used,
+   ended by **Settings → Sign out everywhere**. It is stored readable by your user only
+   (`OPENGYM_TOKEN_FILE` to put it elsewhere) and never appears in a tool result.
+
+2. **Point your LLM client at it** with `OPENGYM_URL` instead of `OPENGYM_DATA`:
+
+   ```jsonc
+   {
+     "mcpServers": {
+       "opengym": {
+         "command": "node",
+         "args": ["/absolute/path/to/openGym/mcp/src/index.js"],
+         "env": { "OPENGYM_URL": "https://gym.example.com" }
+       }
+     }
+   }
+   ```
+
+Now you can say *"Make me a Tuesday and Friday boxing circuit: barbell push-outs, plyo push-ups and
+jump rope, 3 rounds of 60 seconds each, 90 seconds between rounds"* and the routine is in the app
+on its next sync.
+
+How a write is saved: the server's document is read, the change is applied to it, and it is
+written back over the revision it was read at (`PUT /api/data` with `baseRev`). If a phone saved
+in between, the server answers 409 and the change is redone on the newer copy, so nothing the
+phone did is lost. The server stamps what this writer changed (`api/sync-stamps.js`), so a device
+that merges later keeps it. Routines go in through the app's own plan-file import
+(`frontend/src/lib/plan-share.js`), so a routine made here is exactly what **Plan → Import a plan
+file** would make from the same description.
+
 ## Tools
 
-Nine read-only tools in v1:
+Ten read tools (both modes):
 
 | Tool | What it answers |
 |---|---|
@@ -80,6 +130,17 @@ Nine read-only tools in v1:
 | `get_bodyweight` | Weigh-ins with the latest weight, the goal line, and deltas vs goal. |
 | `estimate_1rm` | All-time best 1RM for an exercise + the trend, or a PR table across all exercises. |
 | `muscle_balance` | Which muscles I've trained this week/month/all-time, ranked + which I've neglected. |
+| `find_exercise` | Search the 1,300+ exercise library and the profile's own exercises by name, for the ids the write tools take. |
+
+Five write tools (remote mode only; in local mode they answer with how to turn them on):
+
+| Tool | What it does |
+|---|---|
+| `create_routine` | A new routine from a list of exercises: reps, a rep range (double progression), timed sets, cardio minutes, weight, rest, supersets and circuits, custom exercises for what the library lacks. Optionally scheduled on weekdays. |
+| `update_routine` | Rename a routine and/or replace its exercise list (read it with `get_routine` first). |
+| `set_week_plan` | Which routines each listed weekday holds; an empty list makes a rest day. |
+| `add_bodyweight` | A weigh-in (kg or lb), today or a given date; the same day replaces, as in the app. |
+| `add_measurements` | Tape measurements (cm or in) and body fat for a day, merged into that day's entry. |
 
 `get_routine` and `preview_session` answer two different questions, and confusing them is the
 easiest way for a coach to give wrong advice. `get_routine` reports what the routine *stores*.
@@ -107,13 +168,15 @@ dependencies landed in `frontend/`, no public exports changed.
 
 ## Design constraints honoured
 
-- **One runtime dependency beyond the MCP SDK:** none. No database driver, no HTTP framework.
+- **One runtime dependency beyond the MCP SDK:** none. No database driver, no HTTP framework;
+  remote mode uses Node's built-in `fetch`.
 - **No new container.** stdio transport is spawned by the LLM client; nothing to add to
   `docker-compose.yml`.
-- **No new auth.** The filesystem is the boundary — same as `docker compose` running on the
-  user's box. No passkey material, VAPID keys, or session secrets ever cross it.
-- **No telemetry, no network.** Reads `./data/*.json` and exits when the LLM client
-  disconnects.
+- **No new auth.** Local mode: the filesystem is the boundary — same as `docker compose` running
+  on the user's box. Remote mode: the pairing code and bearer token the phone app already uses;
+  no server change was needed. No passkey material, VAPID keys, or session secrets ever cross it.
+- **No telemetry.** Local mode reads `./data/*.json` and makes no network call; remote mode talks
+  only to `OPENGYM_URL`. Both exit when the LLM client disconnects.
 
 ## Tests
 
@@ -133,10 +196,13 @@ their own 92 tests in `frontend/src/lib/*.test.js`.
 - **Done (Phase 1):** read-only stdio, 8 tools, direct `./data` access.
 - **Done (Phase 1.5):** `preview_session` — the policy's next prescription, the opening set
   rows it produces, and which of plan / confirmed weight / history each number came from.
-- **Phase 2:** read+write over stdio. Requires a long-lived token auth path minted from the
-  admin dashboard (new `./data/tokens.json`) and a write-lock against the web UI's read-modify-
-  write of `state-<uid>.json`. Tools: `log_workout`, `add_bodyweight`, `edit_routine`,
-  `assign_weekday`, `override_day`.
+- **Done (Phase 2):** read+write over stdio in remote mode. The pairing token stands in for a
+  separate token store, and the api's conditional write (`baseRev`, 409 on conflict) for a
+  write-lock. Tools: `create_routine`, `update_routine`, `set_week_plan`, `add_bodyweight`,
+  `add_measurements`, plus `find_exercise`.
+- **Next:** `log_workout` (a finished session has to go through the same reducer the app's
+  Finish button uses, `frontend/src/lib/finish-workout.js`, so progression and PRs move), and
+  `override_day`.
 - **Phase 3:** Streamable HTTP transport, opt-in 4th container in `docker-compose.yml`. Same
   tool implementations, second transport — the MCP SDK supports both behind one tool registration.
 

@@ -1,4 +1,4 @@
-/* The eight read-only tools. Each handler returns JSON; labels.js pre-substitutes any
+/* The read-only tools. Each handler returns JSON; labels.js pre-substitutes any
    {0}/{1} template the lib returns so the LLM gets final text, not template strings.
    ISO dates are validated on the way in; the handlers never see 'yesterday'. */
 import { z } from 'zod'
@@ -18,6 +18,7 @@ import {
 import { loadOfWorkouts, rankOf, levelsOf } from '../../frontend/src/lib/muscles.js'
 import { policyFor } from '../../frontend/src/lib/progression.js'
 import { buildSessionEntries, startsFromLast } from '../../frontend/src/lib/session-start.js'
+import { findExercises } from './writes.js'
 
 /* ---------- helpers ---------- */
 
@@ -670,10 +671,25 @@ export const previewSession = {
   }
 }
 
+/** find_exercise — search the exercise library (and the profile's own exercises) by name. */
+export const findExercise = {
+  name: 'find_exercise',
+  description: 'Search the exercise library (1,300+ built-ins) and the profile\'s own custom exercises by name, best match first. Every word of the query must start a word of the name ("plyo push" finds "plyo push up"). Use the returned id in create_routine / update_routine.',
+  schema: {
+    query: z.string().min(1).max(80),
+    equipment: z.string().max(40).optional(),
+    limit: z.number().int().min(1).max(50).optional()
+  },
+  handler: ({ query, equipment, limit }) => {
+    const S = getState() || {}
+    return { results: findExercises(query, S, { equipment, limit: limit || 10 }) }
+  }
+}
+
 /* ---------- registration list ---------- */
 
 export const TOOLS = [
-  listRoutines, getRoutine, previewSession, getWeekPlan, listWorkouts, getWorkout, getBodyweight, estimate1rm, muscleBalance
+  listRoutines, getRoutine, previewSession, getWeekPlan, listWorkouts, getWorkout, getBodyweight, estimate1rm, muscleBalance, findExercise
 ]
 
 function noState() {

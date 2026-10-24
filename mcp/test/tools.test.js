@@ -944,9 +944,12 @@ describe('shared: no-state fallback', () => {
       muscle_balance: { period: 'all' }
     }
     for (const t of TOOLS) {
+      // The exercise library is there whether or not the profile ever synced.
+      if (t.name === 'find_exercise') continue
       const r = t.handler(calls[t.name] || {})
       expect(r).toHaveProperty('error')
     }
+    expect(TOOLS.find(t => t.name === 'find_exercise').handler({ query: 'jump rope' }).results[0].id).toBe('2612')
   })
 
   // Restore state after the no-state detour so a future test that forgets to seed sees the
