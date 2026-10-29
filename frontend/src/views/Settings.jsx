@@ -1,16 +1,13 @@
 import { useEffect, useRef, useState, forwardRef, useSyncExternalStore } from 'react'
 import { useNavigate, useParams, useLocation, Navigate } from 'react-router-dom'
 import { useStore, DEF, hasData } from '../store/useStore.js'
-import { healthStatus, loadHealth, enableHealth, disableHealth, openHealthConnect, onHealthChange, enableRead, disableRead } from '../lib/health-sync.js'
 import { workoutControls } from '../lib/workout-controls.js'
 import { speedUnitOf } from '../lib/speed.js'
 import { formulaOf, FORMULA_NAMES } from '../lib/onerm.js'
 import { copyText } from '../lib/clipboard.js'
 import { useUI } from '../store/useUI.js'
-import { ACCENTS, ACCENT_NAMES, todayISO, localTZ, weekStartOf, MONDAY, SUNDAY, fmtPlate } from '../lib/format.js'
-import { inventoryFor, ownsPlates } from '../lib/plates.js'
-import { BAR_TYPES, ownBarDefault } from '../lib/bar.js'
-import { dumbbellsOf, ownsNoDumbbells } from '../lib/dumbbells.js'
+import { todayISO, weekStartOf, MONDAY, SUNDAY } from '../lib/format.js'
+import { ownsNoDumbbells } from '../lib/dumbbells.js'
 import { effortOf } from '../lib/history.js'
 import { figureOf } from '../lib/exercises.js'
 import { unlock, chime, playOnSilentSupported, vibrateSupported, appleTouchDevice } from '../lib/sound.js'
@@ -18,20 +15,17 @@ import { REST_SOUND_IDS, restSoundOf } from '../lib/rest-sounds.js'
 import { scheduleModeOf, chooseFixedWeek, chooseRotation } from '../lib/rotation.js'
 import { queueOf } from '../lib/queue.js'
 import { api, webauthnOK, passkeyRegister, passkeyError, IS_ANDROID } from '../lib/api.js'
-import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
+import { pushSupported } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, tn, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
 import { effectiveLang } from '../lib/default-lang.js'
 import { DEMO, REPO } from '../lib/demo.js'
-import { MOBILE, isAndroid, shareExport, shareExportBlob, syncReminder } from '../lib/mobile.js'
-import { NUDGE_COPY, NUDGE_TONES, toneOf } from '../lib/nudge.js'
+import { MOBILE, isAndroid, shareExport, shareExportBlob } from '../lib/mobile.js'
 import { referencedFiles } from '../lib/media-refs.js'
 import { mediaStore } from '../lib/media-store.js'
 import { syncMedia, fetchToStore } from '../lib/media-sync.js'
 import { getMediaStatus, subscribeMediaStatus, pendingRefCount } from '../lib/media-owed.js'
 import { limitsFrom, fmtMB, MB } from '../lib/media-limits.js'
-import { setRestAccent } from '../lib/rest-alert.js'
-import { CUSTOM, accentKey, adjustedIn, applyAccent, cleanHex, inkOn, isGrey } from '../lib/accent.js'
 import { checkForUpdate, downloadAndInstall, fetchChecksum, forgetDownloadedUpdate, RELEASES_PAGE } from '../lib/update.js'
 import { APK_VARIANT, VARIANT_NAMES } from '../lib/apk-variant.js'
 import { BUILTIN_PX } from '../lib/anim-quality.js'
@@ -39,12 +33,16 @@ import { selfUpdates } from '../lib/channel.js'
 import { forgetCoach } from '../lib/coach-api.js'
 import { coachAvailable } from '../lib/coach.js'
 import { REST_MAX, REST_PAUSE_MIN, REST_PAUSE_MAX, fmtRest, fmtDuration } from '../lib/duration.js'
-import { starterPlanSheet, confirmSheet, importFromApp, importFromHevy, equipmentProfileSheet, plateInventorySheet, dumbbellInventorySheet, barDefaultsSheet, menuSheet } from '../sheets.jsx'
+import { starterPlanSheet, confirmSheet, importFromApp, importFromHevy, menuSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { durationSheet } from '../components/DurationWheel.jsx'
 import { showsConnection, showsLocalLine } from '../components/SyncBanner.jsx'
 import BackupFolderRow, { useBackupFolder, autoBackupSubtitle } from '../components/BackupFolderRow.jsx'
 import AppIconRow from '../components/AppIconRow.jsx'
+import { NotificationsCard } from '../components/NotificationsCard.jsx'
+import { AccentSwatches, accentLabel } from '../components/AccentSwatches.jsx'
+import EquipmentCard from '../components/EquipmentCard.jsx'
+import HealthConnectCard from '../components/HealthConnectCard.jsx'
 import { AnimationQualityRow } from '../components/Animations.jsx'
 import { ServerSyncSection, KeptChangesRows, leaveServer, connectServer, passkeySignIn } from '../components/ServerSync.jsx'
 import { passwordOn, PasswordRow, openPasswordSignIn, openPasswordRegister } from '../components/PasswordAuth.jsx'
@@ -1244,281 +1242,11 @@ function effortHelpSheet() {
   </>)
 }
 
-function NotificationsCard({ S, update, toast }) {
-  if (MOBILE) return <MobileReminderCard S={S} update={update} toast={toast} />
-  return <PushCard S={S} update={update} toast={toast} />
-}
-
-// Mobile build: the reminder is a native local notification scheduled on planned weekdays —
-// no push server involved. The schedule itself is (re)synced by the store on every persist;
-// this card only owns the OS permission prompt when the switch turns on.
-function MobileReminderCard({ S, update, toast }) {
-  // A paired phone checks with the server before a nudge (lib/nudge-check.js); the footer says
-  // so, and that the phone decides when.
-  const paired = useStore(s => !!s.user)
-  const setReminder = patch => update(s => { s.reminder = { ...(s.reminder || DEF.reminder), ...patch, tz: localTZ() } })
-  const toggle = async () => {
-    const on = !S.reminder?.on
-    if (on) {
-      const ok = await syncReminder({ ...S, reminder: { ...(S.reminder || DEF.reminder), on: true } }, true)
-      if (!ok) { toast(t('Could not change notification settings')); return }
-    }
-    setReminder({ on })
-  }
-  return (
-    <Section title={t('Notifications')}
-      footer={S.reminder?.on ? t('Reminds you at this time on days that have a routine planned.') + nudgeNote(S) + (paired && S.reminder?.nudge ? ' ' + t('Logged a workout on another device? Before the nudge goes out, the phone checks with your server whenever it lets the app run in the background. Opening the app always catches up.') : '') : null}>
-      <Row icon="calendar" iconTint="var(--orange)" title={t('Workout day reminder')}>
-        <Switch checked={!!S.reminder?.on} onChange={toggle} aria-label={t('Workout day reminder')} />
-      </Row>
-      {S.reminder?.on && (
-        <Row icon="clock" iconTint="var(--purple)" title={t('Reminder time')}>
-          <input type="time" className="timef" value={S.reminder?.time || DEF.reminder.time}
-            onChange={e => setReminder({ time: e.target.value })} />
-        </Row>
-      )}
-      {S.reminder?.on && <NudgeRows S={S} setReminder={setReminder} />}
-    </Section>
-  )
-}
-
-// The missed-workout nudge (lib/nudge.js): a switch and its tone, under the reminder they ride
-// on — the server sends it with the same push (or the phone schedules it beside the reminder).
-function NudgeRows({ S, setReminder }) {
-  const r = S.reminder || {}
-  return <>
-    <Row icon="bell" iconTint="var(--red)" title={t('Nudge me when I skip a planned workout')}>
-      <Switch checked={!!r.nudge} onChange={() => setReminder({ nudge: !r.nudge })} aria-label={t('Nudge me when I skip a planned workout')} />
-    </Row>
-    {r.nudge && (
-      <SelectRow icon="chat" iconTint="var(--blue)" title={t('Nudge tone')}
-        value={toneOf(r)} onChange={v => setReminder({ tone: v })}
-        options={NUDGE_TONES.map(k => ({ value: k, label: toneLabel(k), subtitle: t(NUDGE_COPY[k].title) }))} />
-    )}
-  </>
-}
-const toneLabel = k => k === 'guilt' ? t('Guilt trip') : k === 'drill' ? t('Drill sergeant') : t('Friendly')
-const nudgeNote = S => S.reminder?.nudge
-  ? ' ' + t('One nudge in the evening of a planned day with nothing logged, between 20:00 and 21:30. After 3 missed days in a row it goes quiet until your next workout.')
-  : ''
-
-function PushCard({ S, update, toast }) {
-  const [on, setOn] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const supported = pushSupported()
-
-  // "On" means the server holds this browser's subscription, not merely that the browser has
-  // one: a row the instance dropped (dead send, rebuilt db.json) left the switch on with nothing
-  // ever arriving. syncPushSubscription re-registers on the way; if the server cannot be asked
-  // (offline), the browser's side is the best answer available. A server that refused this
-  // browser's subscription, even a fresh one, has answered: the switch is off, with its reason.
-  useEffect(() => {
-    if (!supported) return
-    let gone = false
-    syncPushSubscription()
-      .then(ok => { if (!gone) setOn(ok) })
-      .catch(e => {
-        if (e?.refused) { if (!gone) { setOn(false); toast(e.message) } return }
-        return navigator.serviceWorker.ready.then(reg => reg.pushManager.getSubscription()).then(sub => { if (!gone) setOn(!!sub) }).catch(() => {})
-      })
-    return () => { gone = true }
-  }, [supported])
-
-  const toggle = async v => {
-    setBusy(true)
-    try {
-      if (!v) { await disablePush(); setOn(false); toast(t('Notifications off')) }
-      else { await enablePush(); setOn(true); toast(t('Notifications on')) }
-    } catch (e) { toast(e.message || t('Could not change notification settings')) }
-    setBusy(false)
-  }
-  const test = async () => {
-    try { await sendTestPush(); toast(t('Test sent! Should pop up any second')) }
-    catch (e) { toast(e.message || t('Test failed')) }
-  }
-
-  if (!supported) return (
-    <Section title={t('Notifications')}>
-      <Row icon="bellSlash" iconTint="var(--grey)" title={t('Not supported in this browser.')} />
-    </Section>
-  )
-
-  return <>
-    <Section
-      title={t('Notifications')}
-      footer={on && S.reminder?.on
-        ? t("Only sent on days you have a routine planned and haven't logged a workout yet.") +
-          (S.reminder?.tz ? ' ' + t('Timezone: {0} (auto-detected, updates if you travel).', S.reminder.tz) : '') +
-          nudgeNote(S)
-        : null}
-    >
-      <Row icon="bell" iconTint="var(--red)" title={t('Push notifications')} subtitle={t('Rest-timer alerts, even if openGym is closed.')}>
-        <Switch checked={on} disabled={busy} onChange={toggle} />
-      </Row>
-      {on && (
-        <Row icon="calendar" iconTint="var(--orange)" title={t('Workout day reminder')}>
-          <Switch checked={!!S.reminder?.on} onChange={() => update(s => { s.reminder = { ...(s.reminder || DEF.reminder), on: !s.reminder?.on, tz: localTZ() } })} />
-        </Row>
-      )}
-      {on && S.reminder?.on && (
-        <Row icon="clock" iconTint="var(--purple)" title={t('Reminder time')}>
-          <input type="time" className="timef" value={S.reminder?.time || DEF.reminder.time}
-            onChange={e => update(s => { s.reminder = { ...(s.reminder || DEF.reminder), time: e.target.value, tz: localTZ() } })} />
-        </Row>
-      )}
-      {on && S.reminder?.on && (
-        <NudgeRows S={S} setReminder={patch => update(s => { s.reminder = { ...(s.reminder || DEF.reminder), ...patch, tz: localTZ() } })} />
-      )}
-    </Section>
-    {on && <div style={{ marginTop: -12, marginBottom: 22 }}><Button size="sm" icon="bell" onClick={test}>{t('Send test notification')}</Button></div>}
-  </>
-}
-
-// Equipment profiles ("Home", "Gym", ...) — each an id/name/eq-list; the active one filters
-// the Library, exercise picker, and flags routine entries that need something outside it
-// (see lib/equipment.js). Purely local/synced state — no server changes needed.
-// What the chosen accent is called: a preset's colour name, or the user's own.
 // The theme showing right now, by name, for the row that opens them.
 function activeSeasonTitle(S) {
   const id = activeSeason(S)
   const th = id && THEMES.find(x => x.id === id)
   return th ? t(th.title) : null
-}
-
-function accentLabel(S) {
-  const k = accentKey(S)
-  return k === CUSTOM ? t('Your own color') : t(ACCENT_NAMES[k] || 'Green')
-}
-
-/**
- * The presets, then one swatch for a colour of the user's own (lib/accent.js). With no colour
- * of their own yet it is a rainbow ring, and a tap opens the system colour picker straight away.
- * Once there is one it is filled with it: a tap picks it again (it is kept while a preset is
- * chosen), and a tap on it while it is the accent opens the picker to change it. The picker is
- * the native <input type="color"> laid over the swatch, so the tap that opens it is the user's
- * own, which iOS Safari and the Android WebView both want.
- */
-// How long the colour picker has to rest before a colour is saved, when the browser sends no
-// `change` at the end (it should, once the picker closes).
-const OWN_COLOR_SETTLE_MS = 400
-
-function AccentSwatches({ S, update }) {
-  const key = accentKey(S)
-  const own = cleanHex(S.accentCustom)
-  const onCustom = key === CUSTOM
-  const pickPreset = k => { update(s => { s.accent = k }); setRestAccent(k) }
-  const pickOwn = hex => {
-    const c = cleanHex(hex)
-    if (!c || (onCustom && c === own)) return
-    update(s => { s.accent = CUSTOM; s.accentCustom = c })
-    setRestAccent(c)
-  }
-  // The picker sends a colour for every step of a drag (React's onChange is the `input` event).
-  // Those only repaint the page; the colour is saved, synced and sent to the native countdown
-  // once: on the picker's `change`, after it has rested a moment, or when Settings closes.
-  const inputRef = useRef(null)
-  const pending = useRef(null)
-  const timer = useRef(0)
-  const pickOwnRef = useRef(pickOwn)
-  pickOwnRef.current = pickOwn
-  const commit = () => {
-    clearTimeout(timer.current)
-    const c = pending.current
-    pending.current = null
-    if (c) pickOwnRef.current(c)
-  }
-  const preview = hex => {
-    const c = cleanHex(hex)
-    if (!c) return
-    const de = document.documentElement
-    applyAccent(de, c, de.dataset.theme)
-    pending.current = c
-    clearTimeout(timer.current)
-    timer.current = setTimeout(commit, OWN_COLOR_SETTLE_MS)
-  }
-  const hasInput = !(own && !onCustom)
-  useEffect(() => {
-    const el = inputRef.current
-    if (!el) return
-    const onChange = () => { pending.current = cleanHex(el.value) || pending.current; commit() }
-    el.addEventListener('change', onChange)
-    return () => el.removeEventListener('change', onChange)
-  }, [hasInput]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => commit, []) // eslint-disable-line react-hooks/exhaustive-deps
-  // The input is not controlled (React would put the saved colour back after every drag step);
-  // a colour changed elsewhere (sync, another tab) is put in by hand.
-  useEffect(() => {
-    if (!pending.current && inputRef.current) inputRef.current.value = own || '#30d158'
-  }, [own])
-  const ownLabel = t('Your own color')
-  const grey = own && isGrey(own)
-  const notes = own && onCustom ? [
-    adjustedIn(own, 'dark') && (grey ? t('Greys show lighter in dark mode, so buttons don’t look switched off.') : t('A touch lighter in dark mode, so you can still read it.')),
-    adjustedIn(own, 'light') && (grey ? t('Greys show darker in light mode, so buttons don’t look switched off.') : t('A touch darker in light mode, so you can still read it.')),
-  ].filter(Boolean) : []
-  return <>
-    <div className="swatches" style={{ flexBasis: '100%', paddingInlineStart: 41 }}>
-      {Object.entries(ACCENTS).map(([k, c]) => (
-        <button key={k} className={'swatch' + (key === k ? ' on' : '')}
-          style={{ background: c }} onClick={() => pickPreset(k)} aria-label={t(ACCENT_NAMES[k] || k)} />
-      ))}
-      {!hasInput
-        ? <button className="swatch swatch-own" style={{ background: own }} onClick={() => pickOwn(own)} aria-label={ownLabel} />
-        : <span className={'swatch swatch-own' + (own ? ' on' : ' unset')} style={own ? { background: own, color: inkOn(own) } : undefined}>
-          {own ? <Icon name="pencil" /> : <Icon name="plus" />}
-          <input ref={inputRef} type="color" className="swatch-input" defaultValue={own || '#30d158'}
-            onChange={e => preview(e.target.value)}
-            aria-label={own ? t('Change your own color') : t('Pick your own color')} />
-        </span>}
-    </div>
-    {notes.map(n => <span key={n} className="lrow-s swatch-note" style={{ flexBasis: '100%', paddingInlineStart: 41 }}>{n}</span>)}
-  </>
-}
-
-function EquipmentCard({ S, update }) {
-  const profiles = S.equipProfiles || []
-  const remove = p => confirmSheet({
-    title: t('Delete profile?'), message: t('"{0}" and its equipment list will be removed.', p.name),
-    confirmText: t('Delete'), danger: true,
-    onConfirm: () => update(s => {
-      s.equipProfiles = (s.equipProfiles || []).filter(x => x.id !== p.id)
-      if (s.activeEquipId === p.id) s.activeEquipId = (s.equipProfiles[0] && s.equipProfiles[0].id) || null
-    }),
-  })
-  // The plates you own, per unit (lib/plates.js) — what the set rows' plate lines load from.
-  const plateSummary = ownsPlates(S)
-    ? inventoryFor(S).map(p => fmtPlate(p.w) + '×' + p.n).join(' · ') || t('None')
-    : t('Standard set. Tap to count the pairs you own.')
-  // The dumbbells you own, per unit (lib/dumbbells.js): what dumbbell lifts step and progress over.
-  const bells = dumbbellsOf(S)
-  const dumbbellSummary = ownsNoDumbbells(S) ? t('None, so dumbbell lifts stay hidden.')
-    : bells.length ? bells.map(fmtPlate).join(' · ')
-      : t('Any weight. Tap to list the ones you own.')
-  // Your bars (lib/bar.js ownBarDefault): the types you set a weight for, in the profile unit.
-  const unit = S.unit === 'lb' ? 'lb' : 'kg'
-  const ownBars = BAR_TYPES.filter(eq => ownBarDefault(S, eq) !== null)
-  const barSummary = ownBars.length
-    ? ownBars.map(eq => { const n = t(eq); return n.charAt(0).toLocaleUpperCase() + n.slice(1) + ' ' + fmtPlate(ownBarDefault(S, eq)) + ' ' + unit }).join(' · ')
-    : t('Standard bars. Tap if yours are lighter.')
-  return <Section title={t('Equipment')} footer={t('Filters the exercise library and picker, and flags routine exercises that need something you don’t have in the active profile.')}>
-    <Row icon="plate" iconTint="var(--orange)" title={t('Plates')} subtitle={plateSummary} accessory="chevron" onClick={() => plateInventorySheet()} />
-    <Row icon="dumbbell" iconTint="var(--teal)" title={t('Dumbbells')} subtitle={dumbbellSummary} accessory="chevron" onClick={() => dumbbellInventorySheet()} />
-    <Row icon="barbell" iconTint="var(--blue)" title={t('Your bars')} subtitle={barSummary} accessory="chevron" onClick={() => barDefaultsSheet()} />
-    {profiles.length > 0 && <Row icon="kettlebell" iconTint="var(--acc)" title={t('Filter by equipment')}>
-      <Switch checked={!!S.equipFilterOn} onChange={v => update(s => { s.equipFilterOn = v })} />
-    </Row>}
-    {profiles.length > 0 && <SelectRow icon="house" iconTint="var(--blue)" title={t('Active profile')}
-      value={S.activeEquipId || ''} onChange={v => update(s => { s.activeEquipId = v })}
-      options={profiles.map(p => ({ value: p.id, label: p.name }))} />}
-    {profiles.map(p => (
-      <Row key={p.id} icon="house" iconTint="var(--teal)" title={p.name}
-        subtitle={t('{0} equipment types', p.equipment.length)} accessory="chevron"
-        onClick={() => equipmentProfileSheet(p)}>
-        <button className="iconbtn" aria-label={t('Delete')} onClick={ev => { ev.stopPropagation(); remove(p) }}><Icon name="trash" /></button>
-      </Row>
-    ))}
-    <Row icon="plus" iconTint="var(--acc)" title={t('Add equipment profile')} accessory="chevron" onClick={() => equipmentProfileSheet(null)} />
-  </Section>
 }
 
 // The account's id, small and one tap to copy (#219). It is what an admin puts in ADMIN_UIDS,
@@ -1606,120 +1334,4 @@ function RegisterInline({ close, setUser, pushState, pullState, toast }) {
     </>}
     <div style={{ height: 12 }} /><Button variant="primary" onClick={go}>{t('Create passkey')}</Button>
   </>
-}
-
-// Android app: writing finished workouts and weigh-ins to Health Connect (#200), the phone's
-// own store for health data, where other apps can read them. A fact about this phone, kept in
-// its own file (lib/health-sync.js) and not in S, so it never switches on anywhere else. The card
-// stays out of the way on a phone without Health Connect, and only points to installing it on
-// Android 13 and lower, where it is an app of its own. The iPhone app's card is the same switch for
-// Apple Health, which the Apple Watch app also goes by (heart rate per set).
-const HEALTH_COPY = {
-  android: () => ({
-    section: t('Health Connect'), write: t('Write to Health Connect'), open: t('Open Health Connect'),
-    footer: t('Workouts and weigh-ins go to Health Connect when you finish or change them.'),
-    on: t('Writing to Health Connect'), denied: t('Health Connect permission not granted'), failed: t('Could not write to Health Connect'),
-    removeFailed: t('Could not remove it from Health Connect'), stop: t('Stop writing to Health Connect?'),
-    stopSub: t('What openGym already wrote can stay in Health Connect as your data, or be removed from it.'),
-  }),
-  ios: () => ({
-    section: t('Apple Health'), write: t('Write to Apple Health'), open: t('Open Apple Health'),
-    footer: t('Workouts and weigh-ins go to Apple Health when you finish or change them.'),
-    on: t('Writing to Apple Health'), denied: t('Apple Health permission not granted'), failed: t('Could not write to Apple Health'),
-    removeFailed: t('Could not remove it from Apple Health'), stop: t('Stop writing to Apple Health?'),
-    stopSub: t('What openGym already wrote can stay in Apple Health as your data, or be removed from it.'),
-  }),
-}
-
-function HealthConnectCard({ S, toast, android }) {
-  const getState = () => useStore.getState().S
-  const [st, setSt] = useState(null)
-  const [h, setH] = useState(null)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    let gone = false
-    Promise.all([healthStatus(), loadHealth()]).then(([s, f]) => { if (!gone) { setSt(s); setH(f) } }).catch(() => {})
-    const off = onHealthChange(f => { if (!gone) setH(f) })
-    return () => { gone = true; off() }
-  }, [])
-  const ios = st?.platform === 'ios'
-  if (!st || !h || st.status === 'unsupported' || (!android && !ios)) return null
-  const c = HEALTH_COPY[ios ? 'ios' : 'android']()
-
-  if (st.status !== 'available') return (
-    <Section title={t('Health Connect')}>
-      <Row icon="heart" iconTint="var(--red)" title={t('Health Connect')}
-        subtitle={st.status === 'update'
-          ? t('Update Health Connect to share workouts and weigh-ins with other apps.')
-          : t('Install Health Connect to share workouts and weigh-ins with other apps.')}
-        accessory="chevron" onClick={() => openHealthConnect().catch(() => {})} />
-    </Section>
-  )
-
-  const turnOn = async () => {
-    setBusy(true)
-    try {
-      const r = await enableHealth(S)
-      if (r.health) setH(r.health)
-      else setH(await loadHealth())
-      if (r.ok) toast(c.on)
-      else toast(r.reason === 'denied' ? c.denied : c.failed)
-    } catch { toast(c.failed) }
-    setBusy(false)
-  }
-  const turnOff = removeWritten => async () => {
-    setBusy(true)
-    try { setH(await disableHealth({ removeWritten })) }
-    catch { toast(c.removeFailed) }
-    setBusy(false)
-  }
-  // Reading back (v1.4.3): heart rate during workouts and weigh-ins from other apps, each its own
-  // switch and its own permission. Turning one off keeps what it already brought in.
-  const toggleRead = kind => async v => {
-    setBusy(true)
-    try {
-      if (v) {
-        const r = await enableRead(kind, getState)
-        setH(r.health || await loadHealth())
-        if (!r.ok) toast(r.reason === 'denied' ? c.denied : c.failed)
-      } else setH(await disableRead(kind))
-    } catch { toast(c.failed) }
-    setBusy(false)
-  }
-  const reading = h.readHr || h.readWeight
-
-  // Off can mean two things for what is already there, so it asks; closing the sheet keeps it on.
-  const askOff = () => menuSheet({
-    title: c.stop,
-    subtitle: c.stopSub,
-    items: [
-      { icon: 'check', label: t('Stop, keep what it wrote'), onClick: turnOff(false) },
-      { icon: 'trash', label: t('Stop and remove what it wrote'), danger: true, onClick: turnOff(true) },
-    ],
-  })
-
-  return (
-    <Section title={c.section}
-      footer={[h.on && c.footer, reading && (h.readWeight && h.wHistory ? t('openGym reads only while it is open: heart rate for workouts of the last day, weigh-ins of the last year. Older workouts stay as they are.') : t('openGym reads only while it is open: heart rate for workouts of the last day, weigh-ins of the last 30 days. Older workouts stay as they are.'))].filter(Boolean).join(' ') || null}>
-      <Row icon="heart" iconTint="var(--red)" title={c.write}
-        subtitle={t('Finished workouts and weigh-ins, from this phone only.')}>
-        <Switch checked={!!h.on} disabled={busy} onChange={v => (v ? turnOn() : askOff())} />
-      </Row>
-      {h.on && h.error === 'permission' && <Row icon="warning" iconTint="var(--orange)"
-        title={t('Permission withdrawn. Tap to allow again')} accessory="chevron" onClick={turnOn} />}
-      <Row icon="heart" iconTint="var(--red)" title={t('Heart rate from your watch')}
-        subtitle={t('After a workout, each set gets the heart rate your watch saved. Garmin, Fitbit, Galaxy Watch and friends welcome.')}>
-        <Switch checked={!!h.readHr} disabled={busy} onChange={toggleRead('hr')} />
-      </Row>
-      <Row icon="scale" iconTint="var(--teal)" title={t('Weigh-ins from other apps')}
-        subtitle={t('Your smart scale’s weigh-ins land here. One you type in yourself always wins.')}>
-        <Switch checked={!!h.readWeight} disabled={busy} onChange={toggleRead('weight')} />
-      </Row>
-      {reading && h.readError === 'permission' && <Row icon="warning" iconTint="var(--orange)"
-        title={t('Permission withdrawn. Tap to allow again')} accessory="chevron"
-        onClick={() => toggleRead(h.readHr ? 'hr' : 'weight')(true)} />}
-      {(h.on || reading) && <Row icon="list" iconTint="var(--blue)" title={c.open}
-        accessory="chevron" onClick={() => openHealthConnect().catch(() => {})} />}
-    </Section>
-  )
 }
