@@ -4,6 +4,7 @@ import { localTZ } from '../lib/format.js'
 import { MOBILE, syncReminder } from '../lib/mobile.js'
 import { NUDGE_COPY, NUDGE_TONES, toneOf } from '../lib/nudge.js'
 import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
+import { isOn } from '../lib/modules.js'
 import { t } from '../lib/i18n.js'
 import { Section, Row, SelectRow, Switch, Button } from './ui.jsx'
 
@@ -43,8 +44,20 @@ function MobileReminderCard({ S, update, toast }) {
         </Row>
       )}
       {S.reminder?.on && <NudgeRows S={S} setReminder={setReminder} />}
+      <WrappedNotifyRow S={S} update={update} />
     </Section>
   )
+}
+
+// Your year in openGym (lib/wrapped.js): one notification on Dec 1, on unless switched off here.
+// The phone plans it itself; a server sends it as a web push. Off takes back a planned one.
+function WrappedNotifyRow({ S, update }) {
+  // Part of the Motivation module (Settings → Modules): with it off there is nothing to notify.
+  if (!isOn(S, 'motivation')) return null
+  const on = S.wrappedNotify !== false
+  return <Row icon="sparkles" iconTint="var(--acc)" title={t('Your year in openGym')} subtitle={t('One notification on 1 December when your year is ready.')}>
+    <Switch checked={on} onChange={() => update(s => { s.wrappedNotify = !on })} aria-label={t('Your year in openGym')} />
+  </Row>
 }
 
 // The missed-workout nudge (lib/nudge.js): a switch and its tone, under the reminder they ride
@@ -134,6 +147,7 @@ function PushCard({ S, update, toast }) {
       {on && S.reminder?.on && (
         <NudgeRows S={S} setReminder={patch => update(s => { s.reminder = { ...(s.reminder || DEF.reminder), ...patch, tz: localTZ() } })} />
       )}
+      {on && <WrappedNotifyRow S={S} update={update} />}
     </Section>
     {on && <div style={{ marginTop: -12, marginBottom: 22 }}><Button size="sm" icon="bell" onClick={test}>{t('Send test notification')}</Button></div>}
   </>
