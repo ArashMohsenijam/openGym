@@ -341,22 +341,29 @@ export function anchorsByWorkout(workouts, opts = {}) {
     .map((workout, index) => ({ workout, index, timestamp: workoutTimestamp(workout) }))
     .filter(item => Number.isFinite(item.timestamp))
     .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
-  const bests = ordered.map(item => sessionBests(item.workout, opts))
   const out = new Map()
-  // `ordered` is sorted by time, so the window's first workout only ever moves forward: each
-  // workout looks back over its own 90 days instead of visiting the whole history to skip it.
-  let lo = 0
-  ordered.forEach((item, i) => {
-    const anchors = new Map()
-    while (lo < i && ordered[lo].timestamp <= item.timestamp - FATIGUE_RIR_WINDOW_MS) lo += 1
-    for (let j = lo; j <= i; j += 1) {
-      if (ordered[j].timestamp <= item.timestamp - FATIGUE_RIR_WINDOW_MS) continue
-      for (const [exId, est] of bests[j]) {
-        if (!anchors.has(exId) || est > anchors.get(exId)) anchors.set(exId, est)
+  // Each exercise keeps decreasing candidate maxima. A newer equal or higher best
+  // outlives the older one, so the older candidate can never become the maximum again.
+  const candidates = new Map()
+  for (const item of ordered) {
+    const cutoff = item.timestamp - FATIGUE_RIR_WINDOW_MS
+    for (const [exId, queue] of candidates) {
+      while (queue.head < queue.values.length && queue.values[queue.head].timestamp <= cutoff) queue.head++
+      if (queue.head === queue.values.length) candidates.delete(exId)
+      else if (queue.head > 64 && queue.head * 2 > queue.values.length) {
+        queue.values = queue.values.slice(queue.head)
+        queue.head = 0
       }
     }
-    out.set(item.workout, anchors)
-  })
+    for (const [exId, est] of sessionBests(item.workout, opts)) {
+      let queue = candidates.get(exId)
+      if (!queue) candidates.set(exId, queue = { values: [], head: 0 })
+      while (queue.values.length > queue.head && queue.values[queue.values.length - 1].est <= est) queue.values.pop()
+      queue.values.push({ timestamp: item.timestamp, est })
+    }
+    // Each workout owns its snapshot: later sessions must not change earlier anchors.
+    out.set(item.workout, new Map([...candidates].map(([exId, queue]) => [exId, queue.values[queue.head].est])))
+  }
   return out
 }
 

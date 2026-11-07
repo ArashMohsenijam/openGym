@@ -245,6 +245,15 @@ export function musclesOf(ex) {
   }
   return positiveOf(muscleWeightsOf(ex))
 }
+// Resolve each exercise once; preserve catalogue order within every muscle's list.
+export function exercisesByMuscle(exercises) {
+  const grouped = Object.fromEntries(MUSCLES.map(slug => [slug, []]))
+  for (const ex of exercises) {
+    for (const slug of Object.keys(musclesOf(ex))) grouped[slug]?.push(ex)
+  }
+  return grouped
+}
+
 const positiveOf = weights => Object.fromEntries(Object.entries(weights).filter(([, weight]) => weight > 0))
 
 /** Snapshot display and weighted muscle metadata into a completed history entry. */

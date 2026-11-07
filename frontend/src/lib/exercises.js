@@ -85,10 +85,11 @@ export function byCategory(list, cat) {
 // merged into the id index here so every EXIDX[id] lookup keeps working unchanged.
 let customIds = new Set()
 const BUILTIN = new Set(CATALOGUE)
+const BUILTIN_BY_ID = new Map(CATALOGUE.map(ex => [ex.id, ex]))
 export function registerCustom(list) {
   customIds.forEach(id => {
     delete EXIDX[id]
-    const builtIn = CATALOGUE.find(ex => ex.id === id)
+    const builtIn = BUILTIN_BY_ID.get(id)
     if (builtIn) EXIDX[id] = builtIn
   })
   const xs = (Array.isArray(list) ? list : []).filter(e => e && e.id != null)

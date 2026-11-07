@@ -42,7 +42,8 @@ export default function Library() {
   // Favourites float to the top of whatever the filters left (issue #6), the rest keeps its order;
   // while searching, the exercises you have logged or planned follow right after them.
   const narrowedList = eqOn ? eqFiltered.filter(e => e.eq === eqOn) : eqFiltered
-  const usage = useMemo(() => (q.trim() ? usageOf(S) : null), [q, S.routines, S.workouts])
+  const searching = !!q.trim()
+  const usage = useMemo(() => (searching ? usageOf(S) : null), [searching, S.routines, S.workouts])
   const f = usage ? sortYoursFirst(narrowedList, S, usage) : sortFavouritesFirst(narrowedList, S)
   useRevealActiveChip(bpStrip, bp)
   useRevealActiveChip(eqStrip, eqOn)

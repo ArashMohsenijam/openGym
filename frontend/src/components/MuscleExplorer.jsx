@@ -4,7 +4,7 @@ import { BODYPARTS, allExercises, equipmentOf, searchExercises } from '../lib/ex
 import { activeProfile, exAvailable } from '../lib/equipment.js'
 import { bestWeightFor } from '../lib/history.js'
 import { fmtNum, exCount } from '../lib/format.js'
-import { MUSCLES, MUSCLE_NAME, musclesOf } from '../lib/muscles.js'
+import { MUSCLES, MUSCLE_NAME, musclesOf, exercisesByMuscle } from '../lib/muscles.js'
 import { t, exerciseNameFor, exerciseNameClass } from '../lib/i18n.js'
 import BodyMap from './BodyMap.jsx'
 import { Thumb } from './Media.jsx'
@@ -35,11 +35,9 @@ export default function MuscleExplorer({ onPick, onDetail, onPlan, pickIcon = 'p
     const all = allExercises(S)
     return (profile && !showAll) ? all.filter(e => exAvailable(S, e)) : all
   }, [S.customEx, S.equipFilterOn, S.activeEquipId, S.equipProfiles, showAll])
-  const counts = useMemo(() => Object.fromEntries(MUSCLES.map(m => [m,
-    catalog.filter(e => musclesOf(e)[m]).length
-  ])), [catalog])
+  const byMuscle = useMemo(() => exercisesByMuscle(catalog), [catalog])
   const pick = muscle => { setSelected(muscle === selected ? null : muscle); setEq(''); setShown(40) }
-  const targeted = selected ? catalog.filter(e => musclesOf(e)[selected]) : []
+  const targeted = byMuscle[selected] || []
   // The picker's Favourites chip (#669), here for the chosen muscle: '☆' in place of a body part.
   const favOn = bp === FAV
   const favHere = targeted.filter(e => isFav(S, e.id)).length
@@ -66,7 +64,7 @@ export default function MuscleExplorer({ onPick, onDetail, onPlan, pickIcon = 'p
       <div className="chips" style={{ marginTop: 10 }}>
         {MUSCLES.map(m => <button key={m} className={'chip' + (selected === m ? ' on' : '')}
           aria-pressed={selected === m} onClick={() => pick(m)}>
-          {t(MUSCLE_NAME[m])} <span className="dim">{counts[m]}</span>
+          {t(MUSCLE_NAME[m])} <span className="dim">{byMuscle[m].length}</span>
         </button>)}
       </div>
     </div>
